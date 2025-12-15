@@ -54,12 +54,18 @@ const defaultHateoasConfig: HATEOASConfig = {
   linkObjectExtensionIdentifier: 'x-links',
 };
 
+export interface APIEndpointConfig {
+  name: string;
+  endpoint: string;
+}
+
 interface GetJSONSchemaOptionsFromOpenAPIOptionsParams {
   source: OpenAPIV3.Document | OpenAPIV2.Document | string;
   fallbackFormat?: 'json' | 'yaml' | 'js' | 'ts';
   cwd?: string;
   fetch?: MeshFetch;
   endpoint?: string;
+  endpoints?: APIEndpointConfig[];
   schemaHeaders?: Record<string, string>;
   operationHeaders?: OperationHeadersConfiguration;
   queryParams?: Record<string, any>;
@@ -104,6 +110,7 @@ export async function getJSONSchemaOptionsFromOpenAPIOptions(
     cwd,
     fetch: fetchFn,
     endpoint,
+    endpoints,
     schemaHeaders,
     operationHeaders,
     queryParams = {},
@@ -201,7 +208,13 @@ export async function getJSONSchemaOptionsFromOpenAPIOptions(
   const operations: JSONSchemaOperationConfig[] = [];
   let baseOperationArgTypeMap: Record<string, JSONSchemaObject>;
 
-  if (!endpoint) {
+  // Handle multiple endpoints if provided
+  let resolvedEndpoints: APIEndpointConfig[] | undefined;
+  if (endpoints && endpoints.length > 0) {
+    resolvedEndpoints = endpoints;
+  }
+
+  if (!endpoint && !resolvedEndpoints) {
     if ('servers' in oasOrSwagger) {
       const serverObj = oasOrSwagger.servers[0];
       endpoint = serverObj.url.split('{').join('{args.');
@@ -895,6 +908,7 @@ export async function getJSONSchemaOptionsFromOpenAPIOptions(
   return {
     operations,
     endpoint,
+    endpoints: resolvedEndpoints,
     cwd,
     fetch: fetchFn,
     schemaHeaders,
