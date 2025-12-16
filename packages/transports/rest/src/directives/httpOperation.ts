@@ -74,6 +74,7 @@ export interface HTTPRootFieldResolverOpts {
   >;
   queryStringOptions: IStringifyOptions & { destructObject?: boolean; jsonStringify?: boolean };
   jsonApiFields: boolean;
+  endpoints?: Array<{ name: string; endpoint: string }>;
 }
 
 export interface GlobalOptions {
@@ -100,6 +101,7 @@ export function addHTTPRootFieldResolver(
     queryStringOptionsByParam,
     queryStringOptions,
     jsonApiFields,
+    endpoints,
   }: HTTPRootFieldResolverOpts,
   {
     sourceName,
@@ -125,8 +127,20 @@ export function addHTTPRootFieldResolver(
       operation: `${info.parentType.name}.${info.fieldName}`,
     });
     operationLogger.debug(`Resolving`);
+
+    // Handle multi-endpoint selection
+    let selectedEndpoint = endpoint;
+    if (endpoints && endpoints.length > 0 && args.endpointName) {
+      const selectedEndpointConfig = endpoints.find(ec => ec.name === args.endpointName);
+      if (selectedEndpointConfig) {
+        selectedEndpoint = selectedEndpointConfig.endpoint;
+      } else {
+        throw createGraphQLError(`Invalid endpoint name: ${args.endpointName}. Available: ${endpoints.map(ec => ec.name).join(', ')}`);
+      }
+    }
+
     const interpolationData = { root, args, context, env: process.env };
-    const interpolatedBaseUrl = stringInterpolator.parse(endpoint, interpolationData);
+    const interpolatedBaseUrl = stringInterpolator.parse(selectedEndpoint, interpolationData);
     const interpolatedPath = stringInterpolator.parse(path, interpolationData);
     let fullPath = urlJoin(interpolatedBaseUrl, interpolatedPath);
     const headers: Record<string, any> = {};

@@ -25,11 +25,18 @@ import { processResponseMetadataAnnotations } from './responseMetadata.js';
 import { addExecutionLogicToScalar, processScalarType } from './scalars.js';
 import { processTypeScriptAnnotations } from './typescriptAnnotations.js';
 
+export interface EndpointConfig {
+  name: string;
+  endpoint: string;
+}
+
+export type EndpointOrEndpoints = string | EndpointConfig[];
+
 export interface ProcessDirectiveArgs {
   pubsub?: MeshPubSub | HivePubSub;
   logger?: Logger;
   globalFetch?: MeshFetch;
-  endpoint?: string;
+  endpoint?: EndpointOrEndpoints;
   timeout?: number;
   operationHeaders?: Record<string, string>;
   queryParams?: Record<string, any>;
@@ -45,8 +52,15 @@ export function processDirectives(
   }
   const transportDirectives = getDirectiveExtensions(schema)?.transport;
   const currDirective = transportDirectives?.[0];
+
+  // Handle multi-endpoint configuration
+  let endpoint: EndpointOrEndpoints | undefined = currDirective?.location;
+  if (currDirective?.endpoints && Array.isArray(currDirective.endpoints) && currDirective.endpoints.length > 0) {
+    endpoint = currDirective.endpoints;
+  }
+
   const globalOptions = {
-    endpoint: currDirective?.location,
+    endpoint,
     operationHeaders: currDirective?.headers,
     queryParams: currDirective?.queryParams,
     queryStringOptions: currDirective?.queryStringOptions,
@@ -221,6 +235,7 @@ export function processDirectives(
                       : directiveAnnotation.args.queryStringOptionsByParam,
                   jsonApiFields: directiveAnnotation.args.jsonApiFields,
                   queryStringOptions: directiveAnnotation.args.queryStringOptions,
+                  endpoints: directiveAnnotation.args.endpoints,
                 },
                 globalOptions as GlobalOptions,
               );

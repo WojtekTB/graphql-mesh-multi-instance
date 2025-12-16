@@ -27,6 +27,8 @@ import {
   TransportDirective,
 } from './directives.js';
 import type {
+  EndpointConfig,
+  EndpointOrEndpoints,
   JSONSchemaLinkConfig,
   JSONSchemaOperationConfig,
   OperationHeadersConfiguration,
@@ -35,7 +37,7 @@ import { getOperationMetadata, isPubSubOperationConfig } from './utils.js';
 
 export interface AddExecutionLogicToComposerOptions {
   schemaComposer: SchemaComposer;
-  endpoint: string;
+  endpoint?: EndpointOrEndpoints;
   operations: JSONSchemaOperationConfig[];
   operationHeaders?: OperationHeadersConfiguration;
   logger: Logger;
@@ -57,6 +59,7 @@ const responseMetadataType = new GraphQLObjectType({
   },
 });
 
+/**Generates the graphql schema with execution directives */
 export function addExecutionDirectivesToComposer(
   subgraphName: string,
   {
@@ -71,6 +74,21 @@ export function addExecutionDirectivesToComposer(
   }: AddExecutionLogicToComposerOptions,
 ) {
   logger.debug(`Attaching execution directives to the schema`);
+
+  // Parse endpoints configuration
+  let endpointConfigs: EndpointConfig[] = [];
+  let defaultEndpoint: string = '';
+
+  if (Array.isArray(endpoint)) {
+    endpointConfigs = endpoint;
+    if (endpointConfigs.length > 0) {
+      defaultEndpoint = endpointConfigs[0].endpoint;
+    }
+  } else if (typeof endpoint === 'string') {
+    defaultEndpoint = endpoint;
+  }
+
+  const hasMultipleEndpoints = endpointConfigs.length > 1;
   for (const operationConfig of operations) {
     const { httpMethod, rootTypeName, fieldName } = getOperationMetadata(operationConfig);
 
@@ -94,12 +112,22 @@ export function addExecutionDirectivesToComposer(
       if (process.env.DEBUG === '1' || process.env.DEBUG === 'fieldDetails') {
         field.description = `
 >**Method**: \`${operationConfig.method}\`
->**Base URL**: \`${endpoint}\`
+>**Base URL**: \`${defaultEndpoint || endpoint}\`
 >**Path**: \`${operationConfig.path}\`
 ${operationConfig.description || ''}
 `;
       } else {
         field.description = operationConfig.description;
+      }
+
+      // Add endpoint selection argument if multiple endpoints are available
+      if (hasMultipleEndpoints) {
+        field.addArgs({
+          endpointName: {
+            type: 'String',
+            description: `Select which endpoint to use. Available: ${endpointConfigs.map(ec => ec.name).join(', ')}. Defaults to: ${endpointConfigs[0].name}`,
+          },
+        });
       }
 
       field.directives = field.directives || [];
@@ -124,6 +152,7 @@ ${operationConfig.description || ''}
               'queryStringOptions' in operationConfig
                 ? operationConfig.queryStringOptions
                 : undefined,
+            endpoints: endpointConfigs.length > 0 ? endpointConfigs : undefined,
           }),
         ),
       });
@@ -296,6 +325,7 @@ ${operationConfig.description || ''}
   }
 
   logger.debug(`Building the executable schema.`);
+  // if did not find any query fields, add a dummy one to make it valid
   if (schemaComposer.Query.getFieldNames().length === 0) {
     schemaComposer.Query.addFields({
       dummy: {
@@ -312,7 +342,8 @@ ${operationConfig.description || ''}
   schemaExtensions.directives.transport = {
     subgraph: subgraphName,
     kind: handlerName,
-    location: endpoint,
+    location: defaultEndpoint || endpoint,
+    endpoints: endpointConfigs.length > 0 ? endpointConfigs : undefined,
     headers: operationHeaders ? Object.entries(operationHeaders) : undefined,
     queryParams: queryParams ? Object.entries(queryParams) : undefined,
     queryStringOptions,

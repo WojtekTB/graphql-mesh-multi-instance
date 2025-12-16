@@ -154,6 +154,9 @@ export const HTTPOperationDirective = new GraphQLDirective({
     queryStringOptions: {
       type: ObjMapScalar,
     },
+    endpoints: {
+      type: new GraphQLList(ObjMapScalar),
+    },
   },
 });
 
@@ -286,6 +289,9 @@ export const TransportDirective = new GraphQLDirective({
     },
     location: {
       type: GraphQLString,
+    },
+    endpoints: {
+      type: new GraphQLList(ObjMapScalar),
     },
     headers: {
       type: new GraphQLList(new GraphQLList(GraphQLString)),

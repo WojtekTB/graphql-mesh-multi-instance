@@ -6,8 +6,13 @@ import type { ResolverData } from '@graphql-mesh/string-interpolation';
 import type { HivePubSub, Logger, MeshFetch, MeshPubSub } from '@graphql-mesh/types';
 import type { BaseLoaderOptions } from '@graphql-tools/utils';
 
+export interface EndpointConfig {
+  name: string;
+  endpoint: string;
+}
+
 export interface JSONSchemaLoaderOptions extends BaseLoaderOptions {
-  endpoint?: string;
+  endpoint?: string | EndpointConfig[];
   operationHeaders?: OperationHeadersConfiguration;
   timeout?: number;
   schemaHeaders?: Record<string, string>;
@@ -114,3 +119,5 @@ export type OperationHeadersFactory = (
     method: HTTPMethod;
   },
 ) => PromiseOrValue<Record<string, string>>;
+
+export type EndpointOrEndpoints = string | EndpointConfig[];

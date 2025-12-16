@@ -23,6 +23,7 @@ export async function getGraphQLSchemaFromDereferencedJSONSchema(
     handlerName = 'rest',
   } = opts;
   logger.debug(`Generating GraphQL Schema from the bundled JSON Schema`);
+  // this is a TypeComposer that holds info about each subschema
   const visitorResult = await getComposerFromJSONSchema({
     subgraphName,
     schema: fullyDeferencedSchema,

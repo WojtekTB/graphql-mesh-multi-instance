@@ -5,7 +5,7 @@ import { getInterpolatedHeadersFactory } from '@graphql-mesh/string-interpolatio
 import type { Logger, MeshFetch } from '@graphql-mesh/types';
 import { defaultImportFn, readFileOrUrl } from '@graphql-mesh/utils';
 import { getReferencedJSONSchemaFromOperations } from './getReferencedJSONSchemaFromOperations.js';
-import type { JSONSchemaOperationConfig } from './types.js';
+import type { JSONSchemaOperationConfig, EndpointOrEndpoints } from './types.js';
 
 export async function getDereferencedJSONSchemaFromOperations({
   operations,
@@ -24,10 +24,13 @@ export async function getDereferencedJSONSchemaFromOperations({
   fetchFn: MeshFetch;
   schemaHeaders?: Record<string, string>;
   ignoreErrorResponses?: boolean;
-  endpoint: string;
+  endpoint: EndpointOrEndpoints;
   operationHeaders: Record<string, string>;
   queryParams: Record<string, string | number | boolean>;
 }): Promise<JSONSchemaObject> {
+  // Normalize endpoint to string for schema loading
+  const endpointUrl = Array.isArray(endpoint) ? (endpoint[0]?.endpoint || '') : endpoint;
+
   const referencedJSONSchema = await getReferencedJSONSchemaFromOperations({
     operations,
     cwd,
@@ -35,7 +38,7 @@ export async function getDereferencedJSONSchemaFromOperations({
     schemaHeaders,
     ignoreErrorResponses,
     fetchFn,
-    endpoint,
+    endpoint: endpointUrl,
     operationHeaders,
     queryParams,
   });

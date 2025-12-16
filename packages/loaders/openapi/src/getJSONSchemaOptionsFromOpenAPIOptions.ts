@@ -18,6 +18,7 @@ import {
 } from '@graphql-mesh/utils';
 import { asArray, createDeferred } from '@graphql-tools/utils';
 import type {
+  EndpointOrEndpoints,
   HTTPMethod,
   JSONSchemaHTTPJSONOperationConfig,
   JSONSchemaOperationConfig,
@@ -59,7 +60,7 @@ interface GetJSONSchemaOptionsFromOpenAPIOptionsParams {
   fallbackFormat?: 'json' | 'yaml' | 'js' | 'ts';
   cwd?: string;
   fetch?: MeshFetch;
-  endpoint?: string;
+  endpoint?: EndpointOrEndpoints;
   schemaHeaders?: Record<string, string>;
   operationHeaders?: OperationHeadersConfiguration;
   queryParams?: Record<string, any>;

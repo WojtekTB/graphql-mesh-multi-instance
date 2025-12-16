@@ -9,6 +9,7 @@ import type { MeshFetch } from '@graphql-mesh/types';
 import { sanitizeNameForGraphQL } from '@graphql-mesh/utils';
 import { asArray } from '@graphql-tools/utils';
 import type {
+  EndpointOrEndpoints,
   HTTPMethod,
   JSONSchemaOperationConfig,
   JSONSchemaOperationResponseConfig,
@@ -45,7 +46,7 @@ export async function getJSONSchemaOptionsFromRAMLOptions({
 }: RAMLLoaderOptions): Promise<{
   operations: JSONSchemaOperationConfig[];
   cwd: string;
-  endpoint: string;
+  endpoint: EndpointOrEndpoints;
   fetch?: MeshFetch;
 }> {
   const fieldTypeMap: Record<string, SelectQueryOrMutationFieldConfig['fieldName']> = {};
