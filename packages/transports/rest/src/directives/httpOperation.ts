@@ -19,6 +19,7 @@ import { Blob, fetch as defaultFetch, File, FormData, URLSearchParams } from '@w
 import { isFileUpload } from './isFileUpload.js';
 import { getJsonApiFieldsQuery } from './jsonApiFields.js';
 import { resolveDataByUnionInputType } from './resolveDataByUnionInputType.js';
+import { mergeResults, validateResultCompatibility } from './mergeResults.js';
 
 type HTTPMethod =
   | 'GET'
@@ -58,6 +59,233 @@ function hasStatusCodeMapping(
     return codes?.some(code => String(code) === String(statusCode));
   });
 }
+
+/**
+ * Performs requests to multiple endpoints and merges results
+ */
+async function performMultiEndpointRequest(
+  selectedEndpoints: Array<{ name: string; endpoint: string }>,
+  resolverContext: {
+    field: GraphQLField<any, any>;
+    root: any;
+    args: any;
+    context: any;
+    info: GraphQLResolveInfo;
+    schema: GraphQLSchema;
+    logger: Logger;
+    returnNamedGraphQLType: any;
+  },
+  requestConfig: {
+    path: string;
+    operationSpecificHeaders: Record<string, string>;
+    httpMethod: HTTPMethod;
+    isBinary: boolean;
+    requestBaseBody: any;
+    queryParamArgMap: Record<string, string>;
+    queryStringOptionsByParam: Record<string, any>;
+    queryStringOptions: IStringifyOptions;
+    jsonApiFields: boolean;
+  },
+  globalConfig: {
+    sourceName: string;
+    timeout: number;
+    globalOperationHeaders: Record<string, string>;
+    globalQueryStringOptions: IStringifyOptions;
+    globalQueryParams: Record<string, any>;
+    globalFetch: MeshFetch;
+    defaultFetch: typeof defaultFetch;
+  },
+): Promise<any> {
+  const { field, info, logger, returnNamedGraphQLType } = resolverContext;
+  const { root, args, context } = resolverContext;
+
+  // Make parallel requests to all selected endpoints
+  const promises = selectedEndpoints.map(epConfig =>
+    performSingleRequest(
+      epConfig.endpoint,
+      {
+        field,
+        root,
+        args,
+        context,
+        info,
+        schema: resolverContext.schema,
+        logger,
+        returnNamedGraphQLType,
+        endpointName: epConfig.name,
+      },
+      requestConfig,
+      globalConfig,
+    ),
+  );
+
+  try {
+    const results = await Promise.all(promises);
+
+    // Validate results are compatible
+    validateResultCompatibility(results, field.type);
+
+    // Merge results
+    const mergedResult = mergeResults(results, field.type, {
+      deduplicateBy: 'id',
+      preferLatest: true,
+    });
+
+    return mergedResult;
+  } catch (error) {
+    throw createGraphQLError(`Failed to fetch from multiple endpoints: ${error instanceof Error ? error.message : String(error)}`, {
+      nodes: info.fieldNodes,
+      originalError: error instanceof Error ? error : undefined,
+    });
+  }
+}
+
+/**
+ * Performs a single request to an endpoint
+ */
+async function performSingleRequest(
+  endpointUrl: string,
+  resolverContext: {
+    field: GraphQLField<any, any>;
+    root: any;
+    args: any;
+    context: any;
+    info: GraphQLResolveInfo;
+    schema: GraphQLSchema;
+    logger: Logger;
+    returnNamedGraphQLType: any;
+    endpointName: string;
+  },
+  requestConfig: {
+    path: string;
+    operationSpecificHeaders: Record<string, string>;
+    httpMethod: HTTPMethod;
+    isBinary: boolean;
+    requestBaseBody: any;
+    queryParamArgMap: Record<string, string>;
+    queryStringOptionsByParam: Record<string, any>;
+    queryStringOptions: IStringifyOptions;
+    jsonApiFields: boolean;
+  },
+  globalConfig: {
+    sourceName: string;
+    timeout: number;
+    globalOperationHeaders: Record<string, string>;
+    globalQueryStringOptions: IStringifyOptions;
+    globalQueryParams: Record<string, any>;
+    globalFetch: MeshFetch;
+    defaultFetch: typeof defaultFetch;
+  },
+): Promise<any> {
+  const { logger, returnNamedGraphQLType, endpointName } = resolverContext;
+  const { field, root, args, context, info } = resolverContext;
+
+  const interpolationData = { root, args: { ...args, endpointName }, context, env: process.env };
+  const interpolatedBaseUrl = stringInterpolator.parse(endpointUrl, interpolationData);
+  const interpolatedPath = stringInterpolator.parse(requestConfig.path, interpolationData);
+  let fullPath = urlJoin(interpolatedBaseUrl, interpolatedPath);
+
+  logger.debug(`Fetching from endpoint [${endpointName}]: ${fullPath}`);
+
+  // Build request (using similar logic as main resolver)
+  const headers: Record<string, any> = {};
+  for (const headerName in globalConfig.globalOperationHeaders) {
+    const value = stringInterpolator.parse(globalConfig.globalOperationHeaders[headerName], interpolationData);
+    if (value) {
+      headers[headerName.toLowerCase()] = value;
+    }
+  }
+
+  if (requestConfig.operationSpecificHeaders) {
+    for (const headerName in requestConfig.operationSpecificHeaders) {
+      const value = stringInterpolator.parse(requestConfig.operationSpecificHeaders[headerName], interpolationData);
+      if (value) {
+        headers[headerName.toLowerCase()] = value;
+      }
+    }
+  }
+
+  const requestInit: MeshFetchRequestInit = {
+    method: requestConfig.httpMethod,
+    headers,
+  };
+
+  if (globalConfig.timeout) {
+    requestInit.signal = AbortSignal.timeout(globalConfig.timeout);
+  }
+
+  // Handle query parameters
+  if (globalConfig.globalQueryParams) {
+    for (const queryParamName in globalConfig.globalQueryParams) {
+      const interpolatedValue = stringInterpolator.parse(
+        globalConfig.globalQueryParams[queryParamName].toString(),
+        interpolationData,
+      );
+      const queryString = qsStringify(
+        { [queryParamName]: interpolatedValue },
+        globalConfig.globalQueryStringOptions,
+      );
+      fullPath += fullPath.includes('?') ? '&' : '?';
+      fullPath += queryString;
+    }
+  }
+
+  logger.debug(`Sending request to endpoint [${endpointName}]`);
+  const fetch: MeshFetch = context?.fetch || globalConfig.globalFetch || (globalConfig.defaultFetch as MeshFetch);
+
+  const response = await fetch(fullPath, requestInit, context, {
+    ...info,
+    sourceName: globalConfig.sourceName,
+  } as GraphQLResolveInfo);
+
+  logger.debug(`Received response from endpoint [${endpointName}]: status ${response.status}`);
+
+  // Handle file response
+  if (returnNamedGraphQLType.name === 'File') {
+    return response.blob();
+  }
+
+  const responseText = await response.text();
+
+  // Parse response
+  let responseJson: any;
+  try {
+    responseJson = JSON.parse(responseText);
+  } catch (error) {
+    if (isScalarType(returnNamedGraphQLType)) {
+      return responseText;
+    }
+    if (response.status === 204 || (response.status === 200 && responseText === '')) {
+      responseJson = {};
+    } else if (!response.status.toString().startsWith('2')) {
+      throw createGraphQLError(
+        `Endpoint [${endpointName}] returned status ${response.status}: ${responseText}`,
+      );
+    } else {
+      throw error;
+    }
+  }
+
+  if (!response.status.toString().startsWith('2')) {
+    throw createGraphQLError(
+      `Endpoint [${endpointName}] returned HTTP ${response.status}: ${JSON.stringify(responseJson)}`,
+    );
+  }
+
+  // Normalize response type
+  const isListReturnType = isListType(field.type) || (isNonNullType(field.type) && isListType(field.type.ofType));
+  const isArrayResponse = Array.isArray(responseJson);
+
+  if (isListReturnType && !isArrayResponse) {
+    responseJson = [responseJson];
+  }
+  if (!isListReturnType && isArrayResponse) {
+    responseJson = responseJson[0];
+  }
+
+  return responseJson;
+}
+
 
 export interface HTTPRootFieldResolverOpts {
   sourceName: string;
@@ -128,17 +356,75 @@ export function addHTTPRootFieldResolver(
     });
     operationLogger.debug(`Resolving`);
 
-    // Handle multi-endpoint selection
-    let selectedEndpoint = endpoint;
+    // Handle endpoint selection - supports both single endpoint name and array of names
+    let selectedEndpoints: Array<{ name: string; endpoint: string }> = [];
+
     if (endpoints && endpoints.length > 0 && args.endpointName) {
-      const selectedEndpointConfig = endpoints.find(ec => ec.name === args.endpointName);
-      if (selectedEndpointConfig) {
-        selectedEndpoint = selectedEndpointConfig.endpoint;
-      } else {
-        throw createGraphQLError(`Invalid endpoint name: ${args.endpointName}. Available: ${endpoints.map(ec => ec.name).join(', ')}`);
+      // Normalize endpointName to array
+      const endpointNames = Array.isArray(args.endpointName)
+        ? args.endpointName
+        : [args.endpointName];
+
+      // Validate and map to endpoint configs
+      for (const name of endpointNames) {
+        const endpointConfig = endpoints.find(ec => ec.name === name);
+        if (!endpointConfig) {
+          throw createGraphQLError(
+            `Invalid endpoint name: ${name}. Available: ${endpoints.map(ec => ec.name).join(', ')}`,
+            { nodes: info.fieldNodes }
+          );
+        }
+        selectedEndpoints.push(endpointConfig);
       }
+    } else if (endpoints && endpoints.length > 0) {
+      // Use first endpoint as default
+      selectedEndpoints = [endpoints[0]];
+    } else {
+      // Single endpoint mode (no multi-endpoint configured)
+      selectedEndpoints = [{ name: 'default', endpoint }];
     }
 
+    operationLogger.debug(`Selected ${selectedEndpoints.length} endpoint(s): ${selectedEndpoints.map(ep => ep.name).join(', ')}`);
+
+    // If multiple endpoints selected, fetch from all and merge
+    if (selectedEndpoints.length > 1) {
+      return performMultiEndpointRequest(
+        selectedEndpoints,
+        {
+          field,
+          root,
+          args,
+          context,
+          info,
+          schema,
+          logger: operationLogger,
+          returnNamedGraphQLType,
+        },
+        {
+          path,
+          operationSpecificHeaders,
+          httpMethod,
+          isBinary,
+          requestBaseBody,
+          queryParamArgMap,
+          queryStringOptionsByParam,
+          queryStringOptions,
+          jsonApiFields,
+        },
+        {
+          sourceName,
+          timeout,
+          globalOperationHeaders,
+          globalQueryStringOptions,
+          globalQueryParams,
+          globalFetch,
+          defaultFetch,
+        },
+      );
+    }
+
+    // Single endpoint request (existing logic)
+    const selectedEndpoint = selectedEndpoints[0].endpoint;
     const interpolationData = { root, args, context, env: process.env };
     const interpolatedBaseUrl = stringInterpolator.parse(selectedEndpoint, interpolationData);
     const interpolatedPath = stringInterpolator.parse(path, interpolationData);

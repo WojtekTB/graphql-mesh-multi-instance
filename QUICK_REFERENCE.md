@@ -36,8 +36,8 @@ type Query {
 ### With Multiple Endpoints
 ```graphql
 type Query {
-  users(endpointName: String): [User]
-  posts(endpointName: String): [Post]
+  users(endpointName: [String]): [User]
+  posts(endpointName: [String]): [Post]
 }
 ```
 
@@ -74,6 +74,22 @@ query {
 # Use backup endpoint
 query {
   users(endpointName: "backup") {
+    id
+    name
+  }
+}
+
+# Combine results from multiple endpoints
+query {
+  users(endpointName: ["primary", "replica"]) {
+    id
+    name
+  }
+}
+
+# Combine results from all endpoints
+query {
+  users(endpointName: ["primary", "replica", "backup"]) {
     id
     name
   }
@@ -136,14 +152,33 @@ type EndpointOrEndpoints = string | EndpointConfig[];
 |----------|----------|
 | Single endpoint | No `endpointName` arg added. Works as before. |
 | Multiple endpoints, no arg | Uses first endpoint (default) |
-| Multiple endpoints, valid arg | Uses specified endpoint |
+| Multiple endpoints, single string arg | Uses specified endpoint |
+| Multiple endpoints, array of args | Fetches from all specified endpoints in parallel and merges results |
 | Multiple endpoints, invalid arg | Error: "Unknown endpoint: ..." |
+
+## Result Merging (Multi-Endpoint Queries)
+
+When passing an array of endpoint names, results are automatically merged:
+
+| Return Type | Merge Strategy |
+|------------|----------------|
+| Array/List | Concatenate results, deduplicate by `id`, prefer latest values |
+| Object | Deep merge objects, later values override earlier ones |
+| Scalar | Return first endpoint's result |
+
+**Example:**
+```typescript
+// Endpoint 1: [{ id: "1", name: "Alice" }, { id: "2", name: "Bob" }]
+// Endpoint 2: [{ id: "2", name: "Bob", email: "bob@new.com" }, { id: "3", name: "Charlie" }]
+// Result: [{ id: "1", name: "Alice" }, { id: "2", name: "Bob", email: "bob@new.com" }, { id: "3", name: "Charlie" }]
+```
 
 ## Performance Impact
 
 - **Single endpoint**: Zero overhead (no changes to resolver)
-- **Multiple endpoints**: O(n) endpoint lookup where n = number of endpoints (typically 2-4)
-- **Network**: No impact - uses same HTTP mechanism
+- **Single endpoint selection**: O(n) endpoint lookup (n = typically 2-4)
+- **Multiple endpoints (parallel)**: Requests made in parallel to all endpoints, final time = max(endpoint response times)
+- **Result merging**: O(m*n) where m = total items, n = number of endpoints (deduplication)
 
 ## Backward Compatibility
 
@@ -156,8 +191,10 @@ type EndpointOrEndpoints = string | EndpointConfig[];
 | 1. Types | ✅ Complete | EndpointConfig, EndpointOrEndpoints |
 | 2. Directives | ✅ Complete | HTTPOperation, Transport directives |
 | 3. Schema Gen | ✅ Complete | Endpoint argument injection, directive embedding |
-| 4. Runtime | ✅ Complete | Resolver options, directive processing |
-| 5. Integration | ✅ Complete | OpenAPI, RAML, JSON Schema loaders |
+| 4. Runtime Single | ✅ Complete | Single endpoint selection, resolver options |
+| 5. Runtime Multi | ✅ Complete | Multi-endpoint parallel requests, result merging |
+| 6. Merging Logic | ✅ Complete | Array merging, object merging, deduplication |
+| 7. Integration | ✅ Complete | OpenAPI, RAML, JSON Schema loaders |
 
 ## Compilation Status
 
@@ -173,5 +210,176 @@ type EndpointOrEndpoints = string | EndpointConfig[];
 1. **MULTI_ENDPOINT_IMPLEMENTATION.md** - Full technical documentation
 2. **RESOLVER_IMPLEMENTATION_GUIDE.md** - Runtime resolver implementation details
 3. **IMPLEMENTATION_CHANGES.md** - Complete change summary
-4. **QUICK_REFERENCE.md** - This file
+4. **MULTI_ENDPOINT_COMBINED_RESULTS.md** - Multi-endpoint aggregation guide
+5. **QUICK_REFERENCE.md** - This file
+
+## Component Interaction
+
+| Component | Responsibility | File |
+|-----------|-----------------|------|
+| Type System | Define endpoint configuration types | `types.ts` |
+| Directives | Embed endpoint metadata | `directives.ts` |
+| Schema Gen | Inject endpoint arguments into fields | `addExecutionLogicToComposer.ts` |
+| HTTP Resolver | Execute requests & merge results | `httpOperation.ts` |
+| Directive Processor | Route to resolver | `process.ts` |
+| Merge Utilities | Array/object merging logic | `mergeResults.ts` |
+
+## Testing the Implementation
+
+### Quick Integration Test
+
+```bash
+# 1. Start your mesh server with multiple endpoints configured
+npm run dev
+
+# 2. Test single endpoint
+curl -X POST http://localhost:4000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "{ users { id name } }"}'
+
+# 3. Test single endpoint selection
+curl -X POST http://localhost:4000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "{ users(endpointName: \"primary\") { id name } }"}'
+
+# 4. Test multi-endpoint merging
+curl -X POST http://localhost:4000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "{ users(endpointName: [\"primary\", \"replica\"]) { id name } }"}'
+```
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| "Unknown endpoint" error | Verify endpoint name matches configured name exactly |
+| Results not merging | Check return type is Array/List for deduplication |
+| Missing fields after merge | Ensure all endpoints return same schema |
+| Timeout on multi-endpoint | Increase timeout in resolver options |
+| Deduplication not working | Verify all objects have `id` field |
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    GraphQL Query                            │
+│  query { users(endpointName: ["primary", "replica"]) }     │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Directive Resolution (process.ts)              │
+│  - Receive field config with endpoints array                │
+│  - Pass to httpOperation resolver                           │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│          HTTP Operation Resolver (httpOperation.ts)         │
+│                                                              │
+│  Normalize endpointName argument to array:                 │
+│  - Single string: "primary" → ["primary"]                  │
+│  - Array: ["primary", "replica"] → ["primary", "replica"]  │
+│  - Null/undefined: Use first endpoint                       │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+            ┌─────┴──────┐
+            │             │
+   Single Endpoint    Multiple Endpoints
+            │             │
+            ▼             ▼
+   performSingle   performMultiEndpoint
+            │             │
+            │      ┌──────┴──────┬──────┐
+            │      │             │      │
+            ▼      ▼             ▼      ▼
+          Endpoint Endpoint  Endpoint Endpoint
+           1 Call   1 Call    2 Call   N Call
+            │      │             │      │
+            │      └─────────┬────┴──────┘
+            │                │
+            │                ▼ Promise.all()
+            │      ┌─────────────────────┐
+            │      │  Validate Results   │
+            │      │  (type checking)    │
+            │      └────────┬────────────┘
+            │               │
+            │               ▼
+            │      ┌─────────────────────┐
+            │      │  Merge Results      │
+            │      │  (by return type)   │
+            │      │                     │
+            │      │ Array     → Concat  │
+            │      │            Dedup    │
+            │      │ Object    → Deep    │
+            │      │            Merge    │
+            │      │ Scalar    → First   │
+            │      └────────┬────────────┘
+            │               │
+            └───────┬───────┘
+                    │
+                    ▼
+          ┌──────────────────────┐
+          │   Return Merged      │
+          │   Result to Client   │
+          └──────────────────────┘
+```
+
+### Data Flow: Multi-Endpoint Query
+
+```
+INPUT:
+  users(endpointName: ["primary", "replica"])
+
+PRIMARY ENDPOINT:
+  [{ id: "1", name: "Alice" },
+   { id: "2", name: "Bob" }]
+
+REPLICA ENDPOINT:
+  [{ id: "2", name: "Bob", email: "bob@example.com" },
+   { id: "3", name: "Charlie" }]
+
+DEDUPLICATION & MERGE:
+  1. Create Map: {id → item}
+  2. Process Primary: {1→Alice, 2→Bob}
+  3. Process Replica: {2→Bob', 3→Charlie}
+     - id:1 already exists, skip
+     - id:2 exists, override with latest (Bob')
+     - id:3 new, add
+  4. Result Map: {1→Alice, 2→Bob', 3→Charlie}
+
+OUTPUT:
+  [{ id: "1", name: "Alice" },
+   { id: "2", name: "Bob", email: "bob@example.com" },
+   { id: "3", name: "Charlie" }]
+```
+
+### Result Merging Logic
+
+```
+┌─────────────────────────────────────┐
+│   mergeResults(results, type)        │
+└────────────┬────────────────────────┘
+             │
+         ┌───┴────┬────────┬─────────┐
+         │        │        │         │
+   ListType  ObjectType  ScalarType  Other
+         │        │        │         │
+         ▼        ▼        ▼         ▼
+    concat+   deep      return    error
+    dedup    merge      first
+         │        │        │
+         └────┬───┴────┬───┘
+              │        │
+              ▼        ▼
+        Validated   Safe Result
+        Result
+```
+
+## Next Steps
+
+1. **Test** the implementation with your actual endpoints
+2. **Monitor** response times for multi-endpoint queries
+3. **Customize** merge strategies if needed (see MULTI_ENDPOINT_COMBINED_RESULTS.md)
+4. **Document** any custom merge logic in your project
 

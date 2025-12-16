@@ -124,8 +124,8 @@ ${operationConfig.description || ''}
       if (hasMultipleEndpoints) {
         field.addArgs({
           endpointName: {
-            type: 'String',
-            description: `Select which endpoint to use. Available: ${endpointConfigs.map(ec => ec.name).join(', ')}. Defaults to: ${endpointConfigs[0].name}`,
+            type: '[String]',
+            description: `Select which endpoint(s) to use. Pass a single endpoint name as string or array of names to combine results from multiple endpoints. Available: ${endpointConfigs.map(ec => ec.name).join(', ')}. Defaults to: ${endpointConfigs[0].name}`,
           },
         });
       }
